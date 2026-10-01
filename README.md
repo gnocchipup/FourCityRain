@@ -10,6 +10,8 @@ geocoding API.
 - Hourly precipitation **probability (%)** or **volume (mm)** heatmaps per city
 - 7-day totals per city and per day column
 - Swap any city via geocoding search
+- Your chosen cities and unit preference are remembered in `localStorage`
+  (use **Reset** in the header to restore the defaults)
 - Light/dark theme (follows `prefers-color-scheme`)
 - Loading, empty, and error states with retry
 - Fully static build — deploys to GitHub Pages with zero server cost

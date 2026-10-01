@@ -9,6 +9,54 @@ const DEFAULT_CITIES = [
 
 const GEO = "https://geocoding-api.open-meteo.com/v1/search";
 const WX = "https://api.open-meteo.com/v1/forecast";
+const STORAGE_KEY = "rain-radar-matrix:v1";
+
+/* ---------- persistence ---------- */
+
+/** A city is only usable if it has a name and in-range coordinates. */
+function isValidCity(c) {
+  return (
+    c &&
+    typeof c.name === "string" &&
+    Number.isFinite(c.lat) &&
+    Number.isFinite(c.lon) &&
+    c.lat >= -90 &&
+    c.lat <= 90 &&
+    c.lon >= -180 &&
+    c.lon <= 180
+  );
+}
+
+/**
+ * Read saved state from localStorage. Private-browsing modes and blocked
+ * storage can throw on access, and the stored JSON may be stale or hand-edited,
+ * so every failure path falls back to the defaults.
+ */
+function loadState() {
+  const fallback = { cities: DEFAULT_CITIES, mode: "pct" };
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw);
+    const cities = Array.isArray(saved?.cities)
+      ? saved.cities.filter(isValidCity).slice(0, 4)
+      : [];
+    return {
+      cities: cities.length ? cities : DEFAULT_CITIES,
+      mode: saved?.mode === "mm" ? "mm" : "pct",
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveState(cities, mode) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ cities, mode }));
+  } catch {
+    /* quota exceeded or storage disabled — non-fatal, state just won't persist */
+  }
+}
 
 /* ---------- helpers ---------- */
 
@@ -375,11 +423,31 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
 /* ---------- app ---------- */
 
 export default function RainRadarMatrix() {
-  const [cities, setCities] = useState(DEFAULT_CITIES);
-  const [mode, setMode] = useState("pct");
+  // Lazy initialiser so localStorage is read once on mount, not on every render.
+  const [state, setState] = useState(loadState);
+  const cities = state.cities;
+  const mode = state.mode;
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const swap = (i, c) => setCities((prev) => prev.map((p, idx) => (idx === i ? c : p)));
+  const setMode = (next) => setState((s) => ({ ...s, mode: next }));
+
+  const swap = (i, c) =>
+    setState((s) => ({ ...s, cities: s.cities.map((p, idx) => (idx === i ? c : p)) }));
+
+  const reset = () => {
+    setState({ cities: DEFAULT_CITIES, mode: "pct" });
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Persist after every change. Writing in an effect (rather than inside the
+  // setters) keeps one code path for every state transition.
+  useEffect(() => {
+    saveState(state.cities, state.mode);
+  }, [state]);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
@@ -415,6 +483,13 @@ export default function RainRadarMatrix() {
               className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
             >
               Refresh all
+            </button>
+            <button
+              onClick={reset}
+              title="Restore the default four cities and clear saved choices"
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              Reset
             </button>
           </div>
         </div>
