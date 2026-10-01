@@ -46,9 +46,34 @@ function barColor(h, mode) {
   return v < 0.5 ? "bg-sky-300" : v <= 2.5 ? "bg-blue-500" : "bg-indigo-600";
 }
 
-function barHeight(h, mode, maxMm) {
-  const pct = mode === "pct" ? h.prob : (h.mm / maxMm) * 100;
+function barHeight(h, mode, scaleTop) {
+  const pct = mode === "pct" ? h.prob : (h.mm / scaleTop) * 100;
   return Math.max(Math.min(pct, 100), 4); // keep a faint baseline tick for zero values
+}
+
+/**
+ * Pick a "nice" axis maximum + tick list (1 / 2 / 2.5 / 5 x 10^n steps) so the
+ * y-axis labels land on readable numbers instead of arbitrary values.
+ */
+function niceScale(maxValue, divisions = 4) {
+  const raw = Math.max(maxValue, divisions) / divisions;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const top = Math.ceil(maxValue / step) * step || step;
+  const ticks = [];
+  for (let v = 0; v <= top + step / 2; v += step) ticks.push(Number(v.toFixed(2)));
+  return { top, ticks };
+}
+
+function formatTick(v, mode) {
+  if (mode === "pct") return `${v}%`;
+  return v % 1 === 0 ? `${v}mm` : `${v.toFixed(1)}mm`;
+}
+
+function hourLabel(time) {
+  const h = Number(String(time).slice(0, 2));
+  return `${String(h).padStart(2, "0")}:00`;
 }
 
 /* ---------- city search ---------- */
@@ -181,6 +206,13 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
     };
   }, [data.days]);
 
+  // Y-axis range + tick labels. % chance is a fixed 0–100 scale; mm scales to the
+  // wettest hour so short bursts still fill the chart.
+  const scale = useMemo(
+    () => (mode === "pct" ? { top: 100, ticks: [0, 25, 50, 75, 100] } : niceScale(maxMm)),
+    [mode, maxMm]
+  );
+
   const showTip = (e, h) => {
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.min(Math.max(r.left + r.width / 2, 90), window.innerWidth - 90);
@@ -207,11 +239,12 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
       </header>
 
       {data.status === "loading" && (
-        <div className="flex gap-1" aria-busy="true" aria-label="Loading forecast">
+        <div className="flex gap-2" aria-busy="true" aria-label="Loading forecast">
+          <div className="w-12 shrink-0" />
           {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="flex-1">
+            <div key={i} className="min-w-0 flex-1">
               <div className="mb-1 h-6 animate-pulse rounded bg-slate-200 dark:bg-slate-800" />
-              <div className="h-28 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+              <div className="h-44 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
             </div>
           ))}
         </div>
@@ -230,34 +263,92 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
       )}
 
       {data.status === "ready" && (
-        <div className="flex gap-1" onMouseLeave={() => setTip(null)}>
-          {data.days.map((day) => (
-            <div key={day.date} className="min-w-0 flex-1">
-              <div className="mb-1 text-center leading-tight">
-                <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">{day.label}</div>
-                <div className="text-xs tabular-nums text-slate-400">{day.total.toFixed(1)} mm</div>
+        <div className="overflow-x-auto pb-1" onMouseLeave={() => setTip(null)}>
+          <div className="min-w-[720px]">
+            {/* Day header row */}
+            <div className="flex gap-2">
+              <div className="w-12 shrink-0" />
+              {data.days.map((day) => (
+                <div key={day.date} className="min-w-0 flex-1 text-center leading-tight">
+                  <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">{day.label}</div>
+                  <div className="text-xs tabular-nums text-slate-400">{day.total.toFixed(1)} mm</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Chart row: y-axis + hourly bars */}
+            <div className="mt-1 flex gap-2">
+              <div className="flex w-12 shrink-0 flex-col justify-between text-right text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500">
+                {scale.ticks.map((t) => (
+                  <span key={t}>{formatTick(t, mode)}</span>
+                ))}
               </div>
-              <div className="flex h-28 items-end gap-px rounded bg-slate-50 px-px dark:bg-slate-950/50">
-                {day.hours.map((h) => (
-                  <div
-                    key={h.time}
-                    onMouseEnter={(e) => showTip(e, h)}
-                    className="flex h-full flex-1 items-end"
-                  >
+
+              <div className="relative flex min-w-0 flex-1 gap-2">
+                <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                  {scale.ticks.map((t) => (
                     <div
-                      className={`w-full rounded-sm ${barColor(h, mode)}`}
-                      style={{ height: `${barHeight(h, mode, maxMm)}%` }}
+                      key={t}
+                      className="absolute inset-x-0 border-t border-dashed border-slate-200 dark:border-slate-800"
+                      style={{ bottom: `${(t / scale.top) * 100}%` }}
                     />
+                  ))}
+                </div>
+
+                {data.days.map((day) => (
+                  <div
+                    key={day.date}
+                    className="relative flex h-44 min-w-0 flex-1 items-end gap-px rounded bg-slate-50 px-px dark:bg-slate-950/50"
+                  >
+                    {day.hours.map((h) => (
+                      <div
+                        key={h.time}
+                        onMouseEnter={(e) => showTip(e, h)}
+                        className="flex h-full flex-1 items-end"
+                      >
+                        <div
+                          className={`w-full rounded-sm ${barColor(h, mode)}`}
+                          style={{ height: `${barHeight(h, mode, scale.top)}%` }}
+                        />
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
             </div>
-          ))}
+
+            {/* 6-hour markers */}
+            <div className="mt-1 flex gap-2">
+              <div className="w-12 shrink-0" />
+              {data.days.map((day) => (
+                <div key={day.date} className="flex h-4 min-w-0 flex-1 gap-px">
+                  {day.hours.map((h) => {
+                    const hh = Number(h.time.slice(0, 2));
+                    const mark = hh % 6 === 0;
+                    return (
+                      <div key={h.time} className="relative flex-1">
+                        {mark && (
+                          <>
+                            <span className="absolute left-0 top-0 h-1.5 border-l border-slate-300 dark:border-slate-600" />
+                            <span className="absolute left-0 top-1.5 text-[9px] tabular-nums text-slate-400 dark:text-slate-500">
+                              {hourLabel(h.time)}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
       {data.status === "ready" && mode === "mm" && (
-        <p className="mt-2 text-right text-xs text-slate-400">Bar scale: 0–{maxMm.toFixed(1)} mm per hour</p>
+        <p className="mt-1 text-right text-xs text-slate-400">
+          Hourly scale: 0–{scale.top} mm per hour
+        </p>
       )}
 
       {tip && (
