@@ -8,6 +8,8 @@ geocoding API.
 ## Features
 
 - Hourly precipitation **probability (%)** or **volume (mm)** heatmaps per city
+- In mm mode all cards share **one** y-axis scale (set by the wettest city), so
+  bar heights are directly comparable across cities
 - 7-day totals per city and per day column
 - Swap any city via geocoding search
 - Your chosen cities and unit preference are remembered in `localStorage`

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
 const DEFAULT_CITIES = [
   { name: "Manila", region: "Metro Manila", country: "Philippines", lat: 14.5995, lon: 120.9842 },
@@ -222,7 +222,12 @@ function CitySearch({ onPick }) {
 
 /* ---------- city card ---------- */
 
-function CityCard({ city, onCityChange, mode, refreshKey }) {
+/** Stable identity for a city, used to track its contribution to the shared scale. */
+function cityKey(city) {
+  return `${city.lat.toFixed(4)},${city.lon.toFixed(4)}`;
+}
+
+function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }) {
   const [data, setData] = useState({ status: "loading", days: [] });
   const [retry, setRetry] = useState(0);
   const [tip, setTip] = useState(null);
@@ -253,11 +258,17 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
     };
   }, [data.days]);
 
-  // Y-axis range + tick labels. % chance is a fixed 0–100 scale; mm scales to the
-  // wettest hour so short bursts still fill the chart.
+  // Report this card's wettest hour upward so every card can share one mm scale.
+  // No dependency on sharedMaxMm/onMaxMm to avoid a report -> re-render -> report loop.
+  useEffect(() => {
+    onMaxMm(maxMm);
+  }, [maxMm]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Y-axis range + tick labels. % chance is a fixed 0–100 scale; mm uses the
+  // wettest hour across ALL cities so the cards stay directly comparable.
   const scale = useMemo(
-    () => (mode === "pct" ? { top: 100, ticks: [0, 25, 50, 75, 100] } : niceScale(maxMm)),
-    [mode, maxMm]
+    () => (mode === "pct" ? { top: 100, ticks: [0, 25, 50, 75, 100] } : niceScale(sharedMaxMm)),
+    [mode, sharedMaxMm]
   );
 
   const showTip = (e, h) => {
@@ -400,9 +411,10 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
         </div>
       )}
 
+      {/* All cards share one scale, so say so once per card rather than implying it's local */}
       {data.status === "ready" && mode === "mm" && (
         <p className="mt-1 text-right text-xs text-slate-400">
-          Hourly scale: 0–{scale.top} mm per hour
+          Shared scale: 0–{scale.top} mm per hour
         </p>
       )}
 
@@ -428,6 +440,31 @@ export default function RainRadarMatrix() {
   const cities = state.cities;
   const mode = state.mode;
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Wettest hourly mm per card, keyed by city so that swapping a city drops its
+  // old entry out of the shared scale instead of leaving a stale high value.
+  const [peakMm, setPeakMm] = useState({});
+
+  const reportMax = useCallback((key, mm) => {
+    setPeakMm((prev) => (prev[key] === mm ? prev : { ...prev, [key]: mm }));
+  }, []);
+
+  const sharedMaxMm = Math.max(2, ...Object.values(peakMm));
+
+  // Drop entries for cities that are no longer on screen, so a swapped-out
+  // city can't keep inflating the shared scale.
+  useEffect(() => {
+    const live = new Set(cities.map(cityKey));
+    setPeakMm((prev) => {
+      const next = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(prev)) {
+        if (live.has(k)) next[k] = v;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [cities]);
 
   const setMode = (next) => setState((s) => ({ ...s, mode: next }));
 
@@ -520,6 +557,8 @@ export default function RainRadarMatrix() {
               city={city}
               mode={mode}
               refreshKey={refreshKey}
+              sharedMaxMm={sharedMaxMm}
+              onMaxMm={(mm) => reportMax(cityKey(city), mm)}
               onCityChange={(c) => swap(i, c)}
             />
           ))}
