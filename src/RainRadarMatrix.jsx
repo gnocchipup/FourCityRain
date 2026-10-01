@@ -432,6 +432,47 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
   );
 }
 
+/* ---------- cloud logo ---------- */
+
+/**
+ * Decorative cloud with falling raindrops. The drops animate with staggered
+ * delays so they don't all fall in lockstep. Purely presentational, so it is
+ * hidden from assistive tech and motion is disabled for reduced-motion users.
+ */
+function CloudRainIcon({ className = "h-9 w-9" }) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      className={className}
+      role="img"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <defs>
+        <linearGradient id="cloudBody" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f8fafc" />
+          <stop offset="100%" stopColor="#cbd5e1" />
+        </linearGradient>
+      </defs>
+
+      {/* cloud */}
+      <g fill="url(#cloudBody)" stroke="#94a3b8" strokeWidth="1.5">
+        <circle cx="24" cy="26" r="10" />
+        <circle cx="38" cy="24" r="12" />
+        <circle cx="48" cy="30" r="8" />
+        <rect x="18" y="28" width="30" height="10" rx="5" />
+      </g>
+
+      {/* raindrops */}
+      <g stroke="#4f46e5" strokeWidth="3.5" strokeLinecap="round">
+        <line className="drop-1" x1="24" y1="44" x2="21" y2="53" />
+        <line className="drop-2" x1="33" y1="44" x2="30" y2="53" />
+        <line className="drop-3" x1="42" y1="44" x2="39" y2="53" />
+      </g>
+    </svg>
+  );
+}
+
 /* ---------- app ---------- */
 
 export default function RainRadarMatrix() {
@@ -490,9 +531,14 @@ export default function RainRadarMatrix() {
     <div className="min-h-screen bg-slate-100 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90">
         <div className="mx-auto flex max-w-[1800px] flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <div>
-            <h1 className="text-lg font-semibold leading-tight tracking-tight">Rain Radar Matrix</h1>
-            <p className="text-xs text-slate-500">7-day hourly rain forecast · Open-Meteo</p>
+          <div className="flex items-center gap-2.5">
+            <CloudRainIcon className="h-9 w-9 shrink-0" />
+            <div>
+              <h1 className="text-lg font-semibold leading-tight tracking-tight">
+                Four City Rain Forecast
+              </h1>
+              <p className="text-xs text-slate-500">7-day hourly rain forecast · Open-Meteo</p>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">

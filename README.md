@@ -1,4 +1,4 @@
-# Rain Radar Matrix 🌧️
+# Four City Rain Forecast 🌧️
 
 A 7-day **hourly rain forecast matrix** for four cities side by side, built with
 React + Vite + Tailwind CSS. Forecast data comes from the free, key-less
