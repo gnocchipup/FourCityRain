@@ -72,8 +72,7 @@ function formatTick(v, mode) {
 }
 
 function hourLabel(time) {
-  const h = Number(String(time).slice(0, 2));
-  return `${String(h).padStart(2, "0")}:00`;
+  return String(Number(String(time).slice(0, 2)));
 }
 
 /* ---------- city search ---------- */
@@ -263,8 +262,8 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
       )}
 
       {data.status === "ready" && (
-        <div className="overflow-x-auto pb-1" onMouseLeave={() => setTip(null)}>
-          <div className="min-w-[720px]">
+        <div onMouseLeave={() => setTip(null)}>
+          <div className="w-full">
             {/* Day header row */}
             <div className="flex gap-2">
               <div className="w-12 shrink-0" />
@@ -278,9 +277,17 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
 
             {/* Chart row: y-axis + hourly bars */}
             <div className="mt-1 flex gap-2">
-              <div className="flex w-12 shrink-0 flex-col justify-between text-right text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500">
+              {/* Y axis — labels absolutely positioned so they line up exactly
+                  with the gridlines (highest value at the top). */}
+              <div className="relative h-44 w-12 shrink-0">
                 {scale.ticks.map((t) => (
-                  <span key={t}>{formatTick(t, mode)}</span>
+                  <span
+                    key={t}
+                    className="absolute right-0 -translate-y-1/2 text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                    style={{ bottom: `${(t / scale.top) * 100}%` }}
+                  >
+                    {formatTick(t, mode)}
+                  </span>
                 ))}
               </div>
 
@@ -317,14 +324,14 @@ function CityCard({ city, onCityChange, mode, refreshKey }) {
               </div>
             </div>
 
-            {/* 6-hour markers */}
+            {/* 6-hour markers: 06, 12, 18 (midnight is omitted as it reads as "0") */}
             <div className="mt-1 flex gap-2">
               <div className="w-12 shrink-0" />
               {data.days.map((day) => (
                 <div key={day.date} className="flex h-4 min-w-0 flex-1 gap-px">
                   {day.hours.map((h) => {
                     const hh = Number(h.time.slice(0, 2));
-                    const mark = hh % 6 === 0;
+                    const mark = hh !== 0 && hh % 6 === 0;
                     return (
                       <div key={h.time} className="relative flex-1">
                         {mark && (
@@ -377,7 +384,7 @@ export default function RainRadarMatrix() {
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="mx-auto flex max-w-[1800px] flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div>
             <h1 className="text-lg font-semibold leading-tight tracking-tight">Rain Radar Matrix</h1>
             <p className="text-xs text-slate-500">7-day hourly rain forecast · Open-Meteo</p>
@@ -413,7 +420,7 @@ export default function RainRadarMatrix() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl p-4">
+      <main className="mx-auto max-w-[1800px] p-4">
         <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
           <span className="font-medium text-slate-600 dark:text-slate-300">
             {mode === "pct" ? "Chance of rain" : "Hourly volume"}
