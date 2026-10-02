@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useId } from "react";
 
 const DEFAULT_CITIES = [
   { name: "Manila", region: "Metro Manila", country: "Philippines", lat: 14.5995, lon: 120.9842 },
@@ -33,26 +33,25 @@ function isValidCity(c) {
  * so every failure path falls back to the defaults.
  */
 function loadState() {
-  const fallback = { cities: DEFAULT_CITIES, mode: "pct" };
+  const fallback = { cities: DEFAULT_CITIES };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return fallback;
     const saved = JSON.parse(raw);
+    // A `mode` key saved by older versions is simply ignored now that the
+    // chart always shows both metrics.
     const cities = Array.isArray(saved?.cities)
       ? saved.cities.filter(isValidCity).slice(0, 4)
       : [];
-    return {
-      cities: cities.length ? cities : DEFAULT_CITIES,
-      mode: saved?.mode === "mm" ? "mm" : "pct",
-    };
+    return { cities: cities.length ? cities : DEFAULT_CITIES };
   } catch {
     return fallback;
   }
 }
 
-function saveState(cities, mode) {
+function saveState(cities) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ cities, mode }));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ cities }));
   } catch {
     /* quota exceeded or storage disabled — non-fatal, state just won't persist */
   }
@@ -87,28 +86,30 @@ function parseForecast(hourly) {
   }));
 }
 
-function barColor(h, mode) {
-  const v = mode === "pct" ? h.prob : h.mm;
+/** Bar colour buckets by mm volume — bars always use the right-hand mm axis. */
+function barColor(h) {
+  const v = h.mm;
   if (v <= 0) return "bg-slate-200 dark:bg-slate-800";
-  if (mode === "pct") return v <= 30 ? "bg-sky-300" : v <= 70 ? "bg-blue-500" : "bg-indigo-600";
   return v < 0.5 ? "bg-sky-300" : v <= 2.5 ? "bg-blue-500" : "bg-indigo-600";
 }
 
-function barHeight(h, mode, scaleTop) {
-  const pct = mode === "pct" ? h.prob : (h.mm / scaleTop) * 100;
+function barHeight(h, scaleTop) {
+  const pct = (h.mm / scaleTop) * 100;
   return Math.max(Math.min(pct, 100), 4); // keep a faint baseline tick for zero values
 }
 
 /**
  * Pick a "nice" axis maximum + tick list (1 / 2 / 2.5 / 5 x 10^n steps) so the
- * y-axis labels land on readable numbers instead of arbitrary values.
+ * y-axis labels land on readable numbers instead of arbitrary values. The top
+ * is always exactly `divisions` steps, so the mm ticks land on the SAME five
+ * gridlines as the fixed 0–100% probability axis (both charts are dual-axis).
  */
 function niceScale(maxValue, divisions = 4) {
   const raw = Math.max(maxValue, divisions) / divisions;
   const mag = 10 ** Math.floor(Math.log10(raw));
   const norm = raw / mag;
   const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
-  const top = Math.ceil(maxValue / step) * step || step;
+  const top = step * divisions;
   const ticks = [];
   for (let v = 0; v <= top + step / 2; v += step) ticks.push(Number(v.toFixed(2)));
   return { top, ticks };
@@ -121,6 +122,30 @@ function formatTick(v, mode) {
 
 function hourLabel(time) {
   return String(Number(String(time).slice(0, 2)));
+}
+
+/** The probability curve always uses this fixed left-hand scale (0–100%). */
+const PCT_SCALE = { top: 100, ticks: [0, 25, 50, 75, 100] };
+
+/**
+ * Catmull-Rom spline through the points, emitted as cubic beziers, so the
+ * hourly probability curve flows instead of zig-zagging between samples.
+ * Coordinates are in the plot's 0–1000 × 0–100 viewBox space.
+ */
+function smoothPath(pts) {
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M${pts[0].x},${pts[0].y}`;
+  let d = `M${pts[0].x},${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1 = { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 };
+    const c2 = { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 };
+    d += ` C${c1.x},${c1.y} ${c2.x},${c2.y} ${p2.x},${p2.y}`;
+  }
+  return d;
 }
 
 /* ---------- city search ---------- */
@@ -227,7 +252,7 @@ function cityKey(city) {
   return `${city.lat.toFixed(4)},${city.lon.toFixed(4)}`;
 }
 
-function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }) {
+function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
   const [data, setData] = useState({ status: "loading", days: [] });
   const [retry, setRetry] = useState(0);
   const [tip, setTip] = useState(null);
@@ -279,12 +304,31 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
     onMaxMm(maxMm);
   }, [maxMm]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Y-axis range + tick labels. % chance is a fixed 0–100 scale; mm uses the
-  // wettest hour across ALL cities so the cards stay directly comparable.
-  const scale = useMemo(
-    () => (mode === "pct" ? { top: 100, ticks: [0, 25, 50, 75, 100] } : niceScale(sharedMaxMm)),
-    [mode, sharedMaxMm]
-  );
+  // Right-hand mm axis: the wettest hour across ALL cities so cards stay
+  // directly comparable. The left-hand axis is the fixed PCT_SCALE above; both
+  // produce five ticks so they share one set of gridlines.
+  const mmScale = useMemo(() => niceScale(sharedMaxMm), [sharedMaxMm]);
+
+  // Probability curve, in the plot's 0–1000 × 0–100 viewBox. x is each hour's
+  // centre within its day column, so every point sits directly over its bar.
+  const { linePath, areaPath } = useMemo(() => {
+    const pts = [];
+    visibleDays.forEach((day, d) => {
+      const hours = day.hours.length || 1;
+      day.hours.forEach((h, j) => {
+        pts.push({
+          x: ((d + (j + 0.5) / hours) / visibleDays.length) * 1000,
+          y: 100 - Math.max(0, Math.min(100, h.prob ?? 0)),
+        });
+      });
+    });
+    const line = smoothPath(pts);
+    const area = pts.length ? `${line} L${pts[pts.length - 1].x},100 L${pts[0].x},100 Z` : "";
+    return { linePath: line, areaPath: area };
+  }, [visibleDays]);
+
+  // One gradient id per card (React 18 useId, stripped of url()-unfriendly chars).
+  const areaFillId = `probFill${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
 
   const showTip = (e, h) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -332,14 +376,15 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
       )}
 
       {data.status === "loading" && (
-        <div className="flex gap-2" aria-busy="true" aria-label="Loading forecast">
-          <div className="w-12 shrink-0" />
+        <div className="flex" aria-busy="true" aria-label="Loading forecast">
+          <div className="mr-2 w-12 shrink-0" />
           {Array.from({ length: 7 }).map((_, i) => (
             <div key={i} className="min-w-0 flex-1">
               <div className="mb-1 h-6 animate-pulse rounded bg-slate-200 dark:bg-slate-800" />
               <div className="h-44 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
             </div>
           ))}
+          <div className="ml-2 w-12 shrink-0" />
         </div>
       )}
 
@@ -358,10 +403,10 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
       {data.status === "ready" && (
         <div onMouseLeave={() => setTip(null)}>
           <div className="w-full">
-            {/* Day header row */}
-            <div className="flex gap-2">
-              <div className="w-12 shrink-0" />
-              {visibleDays.map((day) => (
+            {/* Day header row — columns are contiguous so they line up with the plot */}
+            <div className="flex">
+              <div className="mr-2 w-12 shrink-0" />
+              {visibleDays.map((day, i) => (
                 <button
                   key={day.date}
                   type="button"
@@ -369,6 +414,8 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
                   aria-pressed={focusedDay === day.date}
                   title={focusedDay === day.date ? "Show all 7 days" : `Zoom in on ${day.label}`}
                   className={`min-w-0 flex-1 cursor-pointer rounded-md px-1 py-0.5 text-center leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                    i > 0 ? "border-l border-dashed border-slate-200 dark:border-slate-800" : ""
+                  } ${
                     focusedDay === day.date
                       ? "bg-indigo-50 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:ring-indigo-500/40"
                       : "hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -378,60 +425,110 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
                   <div className="text-xs tabular-nums text-slate-400">{day.total.toFixed(1)} mm</div>
                 </button>
               ))}
+              <div className="ml-2 w-12 shrink-0" />
             </div>
 
-            {/* Chart row: y-axis + hourly bars */}
-            <div className="mt-1 flex gap-2">
-              {/* Y axis — labels absolutely positioned so they line up exactly
+            {/* Chart row: left % axis, shared plot, right mm axis */}
+            <div className="mt-1 flex">
+              {/* Left axis — labels absolutely positioned so they line up exactly
                   with the gridlines (highest value at the top). */}
-              <div className="relative h-44 w-12 shrink-0">
-                {scale.ticks.map((t) => (
+              <div className="relative mr-2 h-44 w-12 shrink-0">
+                {PCT_SCALE.ticks.map((t) => (
                   <span
                     key={t}
                     className="absolute right-0 -translate-y-1/2 text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
-                    style={{ bottom: `${(t / scale.top) * 100}%` }}
+                    style={{ bottom: `${(t / PCT_SCALE.top) * 100}%` }}
                   >
-                    {formatTick(t, mode)}
+                    {formatTick(t, "pct")}
                   </span>
                 ))}
               </div>
 
-              <div className="relative flex min-w-0 flex-1 gap-2">
+              <div className="relative h-44 min-w-0 flex-1 rounded bg-slate-50 dark:bg-slate-950/50">
+                {/* Gridlines double as day dividers; both axes land on them. */}
                 <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-                  {scale.ticks.map((t) => (
+                  {PCT_SCALE.ticks.map((t) => (
                     <div
                       key={t}
                       className="absolute inset-x-0 border-t border-dashed border-slate-200 dark:border-slate-800"
-                      style={{ bottom: `${(t / scale.top) * 100}%` }}
+                      style={{ bottom: `${(t / PCT_SCALE.top) * 100}%` }}
                     />
                   ))}
+                  {visibleDays.map((day, i) =>
+                    i === 0 ? null : (
+                      <div
+                        key={day.date}
+                        className="absolute inset-y-0 border-l border-dashed border-slate-200 dark:border-slate-800"
+                        style={{ left: `${(i / visibleDays.length) * 100}%` }}
+                      />
+                    )
+                  )}
                 </div>
 
-                {visibleDays.map((day) => (
-                  <div
-                    key={day.date}
-                    className="relative flex h-44 min-w-0 flex-1 items-end gap-px rounded bg-slate-50 px-px dark:bg-slate-950/50"
-                  >
-                    {day.hours.map((h) => (
-                      <div
-                        key={h.time}
-                        onMouseEnter={(e) => showTip(e, h)}
-                        className="flex h-full flex-1 items-end"
-                      >
+                {/* Smooth chance-of-rain curve with its gradient fill underneath */}
+                <svg
+                  className="pointer-events-none absolute inset-0 h-full w-full"
+                  viewBox="0 0 1000 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <defs>
+                    <linearGradient id={areaFillId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#6366f1" stopOpacity="0.45" />
+                      <stop offset="100%" stopColor="#6366f1" stopOpacity="0.05" />
+                    </linearGradient>
+                  </defs>
+                  <path d={areaPath} fill={`url(#${areaFillId})`} />
+                  <path
+                    d={linePath}
+                    fill="none"
+                    stroke="#4f46e5"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </svg>
+
+                {/* mm volume columns, overlaid on the curve (slightly translucent
+                    so the line stays readable underneath them) */}
+                <div className="absolute inset-0 flex items-end">
+                  {visibleDays.map((day) => (
+                    <div key={day.date} className="flex h-full min-w-0 flex-1 items-end gap-px">
+                      {day.hours.map((h) => (
                         <div
-                          className={`w-full rounded-sm ${barColor(h, mode)}`}
-                          style={{ height: `${barHeight(h, mode, scale.top)}%` }}
-                        />
-                      </div>
-                    ))}
-                  </div>
+                          key={h.time}
+                          onMouseEnter={(e) => showTip(e, h)}
+                          className="flex h-full flex-1 items-end"
+                        >
+                          <div
+                            className={`w-full rounded-sm opacity-70 ${barColor(h)}`}
+                            style={{ height: `${barHeight(h, mmScale.top)}%` }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Right axis: mm volume, sharing the same five gridlines */}
+              <div className="relative ml-2 h-44 w-12 shrink-0">
+                {mmScale.ticks.map((t) => (
+                  <span
+                    key={t}
+                    className="absolute left-0 -translate-y-1/2 text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                    style={{ bottom: `${(t / mmScale.top) * 100}%` }}
+                  >
+                    {formatTick(t, "mm")}
+                  </span>
                 ))}
               </div>
             </div>
 
             {/* 6-hour markers: 06, 12, 18 (midnight is omitted as it reads as "0") */}
-            <div className="mt-1 flex gap-2">
-              <div className="w-12 shrink-0" />
+            <div className="mt-1 flex">
+              <div className="mr-2 w-12 shrink-0" />
               {visibleDays.map((day) => (
                 <div key={day.date} className="flex h-4 min-w-0 flex-1 gap-px">
                   {day.hours.map((h) => {
@@ -452,15 +549,16 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
                   })}
                 </div>
               ))}
+              <div className="ml-2 w-12 shrink-0" />
             </div>
           </div>
         </div>
       )}
 
-      {/* All cards share one scale, so say so once per card rather than implying it's local */}
-      {data.status === "ready" && mode === "mm" && (
+      {/* All cards share one mm scale, so say so once per card rather than implying it's local */}
+      {data.status === "ready" && (
         <p className="mt-1 text-right text-xs text-slate-400">
-          Shared scale: 0–{scale.top} mm per hour
+          Left axis 0–100% chance · bars share 0–{mmScale.top} mm per hour across all cities
         </p>
       )}
 
@@ -525,7 +623,6 @@ export default function RainRadarMatrix() {
   // Lazy initialiser so localStorage is read once on mount, not on every render.
   const [state, setState] = useState(loadState);
   const cities = state.cities;
-  const mode = state.mode;
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Wettest hourly mm per card, keyed by city so that swapping a city drops its
@@ -553,13 +650,11 @@ export default function RainRadarMatrix() {
     });
   }, [cities]);
 
-  const setMode = (next) => setState((s) => ({ ...s, mode: next }));
-
   const swap = (i, c) =>
     setState((s) => ({ ...s, cities: s.cities.map((p, idx) => (idx === i ? c : p)) }));
 
   const reset = () => {
-    setState({ cities: DEFAULT_CITIES, mode: "pct" });
+    setState({ cities: DEFAULT_CITIES });
     try {
       window.localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -570,7 +665,7 @@ export default function RainRadarMatrix() {
   // Persist after every change. Writing in an effect (rather than inside the
   // setters) keeps one code path for every state transition.
   useEffect(() => {
-    saveState(state.cities, state.mode);
+    saveState(state.cities);
   }, [state]);
 
   return (
@@ -588,25 +683,6 @@ export default function RainRadarMatrix() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div role="group" aria-label="Metric" className="inline-flex rounded-lg border border-slate-300 bg-slate-100 p-0.5 text-xs font-medium dark:border-slate-700 dark:bg-slate-800">
-              {[
-                ["pct", "% Chance"],
-                ["mm", "Precipitation (mm)"],
-              ].map(([val, label]) => (
-                <button
-                  key={val}
-                  onClick={() => setMode(val)}
-                  aria-pressed={mode === val}
-                  className={`rounded-md px-3 py-1 transition-colors ${
-                    mode === val
-                      ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-950 dark:text-indigo-400"
-                      : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
             <button
               onClick={() => setRefreshKey((n) => n + 1)}
               className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
@@ -627,13 +703,18 @@ export default function RainRadarMatrix() {
       <main className="mx-auto max-w-[1800px] p-4">
         <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
           <span className="font-medium text-slate-600 dark:text-slate-300">
-            {mode === "pct" ? "Chance of rain" : "Hourly volume"}
+            One dual-axis chart per city
           </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-4 rounded-full bg-indigo-600" />
+            Chance of rain 0–100% (left)
+          </span>
+          <span className="text-slate-400">Bars — hourly volume, mm (right):</span>
           {[
-            ["bg-slate-200 dark:bg-slate-800", mode === "pct" ? "0%" : "0 mm"],
-            ["bg-sky-300", mode === "pct" ? "1–30%" : "< 0.5 mm"],
-            ["bg-blue-500", mode === "pct" ? "31–70%" : "0.5–2.5 mm"],
-            ["bg-indigo-600", mode === "pct" ? "71–100%" : "> 2.5 mm"],
+            ["bg-slate-200 dark:bg-slate-800", "0 mm"],
+            ["bg-sky-300", "< 0.5 mm"],
+            ["bg-blue-500", "0.5–2.5 mm"],
+            ["bg-indigo-600", "> 2.5 mm"],
           ].map(([c, l]) => (
             <span key={l} className="inline-flex items-center gap-1.5">
               <span className={`inline-block h-2.5 w-2.5 rounded-sm ${c}`} />
@@ -647,7 +728,6 @@ export default function RainRadarMatrix() {
             <CityCard
               key={i}
               city={city}
-              mode={mode}
               refreshKey={refreshKey}
               sharedMaxMm={sharedMaxMm}
               onMaxMm={(mm) => reportMax(cityKey(city), mm)}
