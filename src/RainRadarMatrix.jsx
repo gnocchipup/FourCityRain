@@ -231,6 +231,8 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
   const [data, setData] = useState({ status: "loading", days: [] });
   const [retry, setRetry] = useState(0);
   const [tip, setTip] = useState(null);
+  // Date string of the single day being zoomed into, or null for the full 7-day view.
+  const [focusedDay, setFocusedDay] = useState(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -249,6 +251,19 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
     })();
     return () => ctrl.abort();
   }, [city, refreshKey, retry]);
+
+  // Clear the zoom when the city (and therefore its forecast dates) changes, or
+  // when a refresh no longer returns the day that was selected.
+  useEffect(() => {
+    setFocusedDay((d) => (d && data.days.some((day) => day.date === d) ? d : null));
+  }, [data.days]);
+
+  // The three rows below (day headers, bars, hour marks) all render from this:
+  // every day in the 7-day view, or just the clicked day when zoomed in.
+  const visibleDays = useMemo(
+    () => (focusedDay ? data.days.filter((d) => d.date === focusedDay) : data.days),
+    [data.days, focusedDay]
+  );
 
   const { total, maxMm } = useMemo(() => {
     const all = data.days.flatMap((d) => d.hours);
@@ -281,7 +296,21 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
     <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <header className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold leading-tight text-slate-900 dark:text-slate-50">{city.name}</h2>
+          <h2 className="truncate text-base font-semibold leading-tight text-slate-900 dark:text-slate-50">
+            <button
+              type="button"
+              onClick={() => setFocusedDay(null)}
+              disabled={!focusedDay}
+              title={focusedDay ? "Back to the full 7-day view" : undefined}
+              className={`max-w-full truncate rounded text-left focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                focusedDay
+                  ? "cursor-pointer underline decoration-dotted decoration-slate-400 underline-offset-4 hover:text-indigo-600 dark:hover:text-indigo-400"
+                  : "cursor-default"
+              }`}
+            >
+              {city.name}
+            </button>
+          </h2>
           <p className="truncate text-xs text-slate-500">{[city.region, city.country].filter(Boolean).join(", ")}</p>
         </div>
         <div className="flex items-center gap-3">
@@ -295,6 +324,12 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
           <CitySearch onPick={onCityChange} />
         </div>
       </header>
+
+      {data.status === "ready" && focusedDay && (
+        <p className="-mt-1 mb-2 text-xs text-slate-500">
+          Zoomed to one day · click <span className="font-medium text-slate-600 dark:text-slate-300">{city.name}</span> above to see all 7 days
+        </p>
+      )}
 
       {data.status === "loading" && (
         <div className="flex gap-2" aria-busy="true" aria-label="Loading forecast">
@@ -326,11 +361,22 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
             {/* Day header row */}
             <div className="flex gap-2">
               <div className="w-12 shrink-0" />
-              {data.days.map((day) => (
-                <div key={day.date} className="min-w-0 flex-1 text-center leading-tight">
+              {visibleDays.map((day) => (
+                <button
+                  key={day.date}
+                  type="button"
+                  onClick={() => setFocusedDay((cur) => (cur === day.date ? null : day.date))}
+                  aria-pressed={focusedDay === day.date}
+                  title={focusedDay === day.date ? "Show all 7 days" : `Zoom in on ${day.label}`}
+                  className={`min-w-0 flex-1 cursor-pointer rounded-md px-1 py-0.5 text-center leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                    focusedDay === day.date
+                      ? "bg-indigo-50 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:ring-indigo-500/40"
+                      : "hover:bg-slate-100 dark:hover:bg-slate-800"
+                  }`}
+                >
                   <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">{day.label}</div>
                   <div className="text-xs tabular-nums text-slate-400">{day.total.toFixed(1)} mm</div>
-                </div>
+                </button>
               ))}
             </div>
 
@@ -361,7 +407,7 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
                   ))}
                 </div>
 
-                {data.days.map((day) => (
+                {visibleDays.map((day) => (
                   <div
                     key={day.date}
                     className="relative flex h-44 min-w-0 flex-1 items-end gap-px rounded bg-slate-50 px-px dark:bg-slate-950/50"
@@ -386,7 +432,7 @@ function CityCard({ city, onCityChange, mode, refreshKey, sharedMaxMm, onMaxMm }
             {/* 6-hour markers: 06, 12, 18 (midnight is omitted as it reads as "0") */}
             <div className="mt-1 flex gap-2">
               <div className="w-12 shrink-0" />
-              {data.days.map((day) => (
+              {visibleDays.map((day) => (
                 <div key={day.date} className="flex h-4 min-w-0 flex-1 gap-px">
                   {day.hours.map((h) => {
                     const hh = Number(h.time.slice(0, 2));

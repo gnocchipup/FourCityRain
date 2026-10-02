@@ -11,6 +11,8 @@ geocoding API.
 - In mm mode all cards share **one** y-axis scale (set by the wettest city), so
   bar heights are directly comparable across cities
 - 7-day totals per city and per day column
+- Click a day header to zoom that card into a single day; click the city name
+  to return to the full 7-day view
 - Swap any city via geocoding search
 - Your chosen cities and unit preference are remembered in `localStorage`
   (use **Reset** in the header to restore the defaults)
