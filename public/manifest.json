@@ -1,5 +1,5 @@
 {
-  "id": "./",
+  "id": "FourCityRain",
   "name": "Four City Rain Forecast",
   "short_name": "Four City Rain",
   "description": "A 7-day hourly rain forecast matrix for four cities, powered by Open-Meteo.",
