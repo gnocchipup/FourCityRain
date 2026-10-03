@@ -68,16 +68,33 @@ function dayLabel(date) {
     .replace(",", "");
 }
 
+/**
+ * "Chance of annoying rain" — the headline metric, replacing the raw
+ * precipitation probability. Chance of rain alone rates a 100%-likely 0.1 mm
+ * drizzle the same as a downpour, so the score scales chance by how much water
+ * actually falls. The cap is the raw chance itself, never 100%: the score can
+ * only discount drizzle downwards, never claim more likely than the forecast.
+ * So light drizzle scores low (0.1 mm at 100% -> 5%), while anything genuinely
+ * wet keeps its full probability (3 mm at 90% -> 90%).
+ */
+function annoyingScore(mm, prob) {
+  const rawScore = (mm / 2) * prob;
+  return Math.round(Math.min(prob, rawScore));
+}
+
 function parseForecast(hourly) {
   const byDay = new Map();
   hourly.time.forEach((t, i) => {
     const [date, time] = t.split("T");
     if (!byDay.has(date)) byDay.set(date, []);
+    const mm = hourly.precipitation?.[i] ?? 0;
+    const prob = hourly.precipitation_probability?.[i] ?? 0;
     byDay.get(date).push({
       time,
       label: dayLabel(date),
-      prob: hourly.precipitation_probability?.[i] ?? 0,
-      mm: hourly.precipitation?.[i] ?? 0,
+      prob,
+      mm,
+      annoying: annoyingScore(mm, prob),
     });
   });
   return [...byDay.entries()].slice(0, DAY_COUNT).map(([date, hours]) => ({
@@ -104,7 +121,7 @@ function barHeight(h, scaleTop) {
  * Pick a "nice" axis maximum + tick list (1 / 2 / 2.5 / 5 x 10^n steps) so the
  * y-axis labels land on readable numbers instead of arbitrary values. The top
  * is always exactly `divisions` steps, so the mm ticks land on the SAME five
- * gridlines as the fixed 0–100% probability axis (both charts are dual-axis).
+ * gridlines as the fixed 0–100% annoying-rain axis (both charts are dual-axis).
  */
 function niceScale(maxValue, divisions = 4) {
   const raw = Math.max(maxValue, divisions) / divisions;
@@ -126,12 +143,12 @@ function hourLabel(time) {
   return String(Number(String(time).slice(0, 2)));
 }
 
-/** The probability curve always uses this fixed left-hand scale (0–100%). */
+/** The annoying-rain curve always uses this fixed left-hand scale (0–100%). */
 const PCT_SCALE = { top: 100, ticks: [0, 25, 50, 75, 100] };
 
 /**
  * Catmull-Rom spline through the points, emitted as cubic beziers, so the
- * hourly probability curve flows instead of zig-zagging between samples.
+ * hourly annoying-rain curve flows instead of zig-zagging between samples.
  * Coordinates are in the plot's 0–1000 × 0–100 viewBox space.
  */
 function smoothPath(pts) {
@@ -350,7 +367,7 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayInd
   // produce five ticks so they share one set of gridlines.
   const mmScale = useMemo(() => niceScale(sharedMaxMm), [sharedMaxMm]);
 
-  // Probability curve, in the plot's 0–1000 × 0–100 viewBox. x is each hour's
+  // Annoying-rain curve, in the plot's 0–1000 × 0–100 viewBox. x is each hour's
   // centre within its day column, so every point sits directly over its bar.
   const { linePath, areaPath } = useMemo(() => {
     const pts = [];
@@ -359,7 +376,7 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayInd
       day.hours.forEach((h, j) => {
         pts.push({
           x: ((d + (j + 0.5) / hours) / visibleDays.length) * 1000,
-          y: 100 - Math.max(0, Math.min(100, h.prob ?? 0)),
+          y: 100 - Math.max(0, Math.min(100, h.annoying ?? 0)),
         });
       });
     });
@@ -544,7 +561,7 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayInd
                   )}
                 </div>
 
-                {/* Smooth chance-of-rain curve with its gradient fill underneath */}
+                {/* Smooth chance-of-annoying-rain curve with its gradient fill underneath */}
                 <svg
                   className="pointer-events-none absolute inset-0 h-full w-full"
                   viewBox="0 0 1000 100"
@@ -637,7 +654,7 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayInd
       {/* All cards share one mm scale, so say so once per card rather than implying it's local */}
       {data.status === "ready" && (
         <p className="mt-1 text-right text-xs text-slate-400">
-          Left axis 0–100% chance · bars share 0–{mmScale.top} mm per hour across all cities
+          Left axis 0–100% annoying-rain score · bars share 0–{mmScale.top} mm per hour across all cities
           {data.refreshing && <span className="ml-1 text-slate-400">· refreshing…</span>}
           {data.message && <span className="ml-1 text-rose-500">· last refresh failed: {data.message}</span>}
         </p>
@@ -649,8 +666,11 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayInd
           style={{ left: tip.x, top: tip.y - 6 }}
         >
           <div className="font-medium">{tip.h.label} at {tip.h.time}</div>
-          <div className="text-slate-300">Precip Chance: {tip.h.prob}%</div>
-          <div className="text-slate-300">Precip Volume: {tip.h.mm.toFixed(1)} mm</div>
+          <div className="text-slate-300">Annoying Rain: {tip.h.annoying}%</div>
+          {/* The two raw inputs behind the score, for context. */}
+          <div className="text-slate-400">
+            Rain chance {tip.h.prob}% · {tip.h.mm.toFixed(1)} mm
+          </div>
         </div>
       )}
     </section>
@@ -841,7 +861,7 @@ export default function RainRadarMatrix() {
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-0.5 w-4 rounded-full bg-indigo-600" />
-            Chance of rain 0–100% (left)
+            Chance of annoying rain 0–100% (left) = min(chance, (mm ÷ 2) × chance)
           </span>
           <span className="text-slate-400">Bars — hourly volume, mm (right):</span>
           {[

@@ -7,9 +7,13 @@ geocoding API.
 
 ## Features
 
-- One **dual-axis chart** per city: a smooth **chance-of-rain curve** with a
-  gradient fill (0–100%, left axis) plus **hourly mm volume columns** overlaid
+- One **dual-axis chart** per city: a smooth **chance-of-annoying-rain curve** with
+  a gradient fill (0–100%, left axis) plus **hourly mm volume columns** overlaid
   on the same plot (right axis)
+- The headline metric is `min(chance-of-rain, (mm ÷ 2) × chance-of-rain)` — a
+  drizzle discount on the raw chance, capped by the chance itself rather than
+  100%. So 0.1 mm at 100% chance scores ~5%, while 3 mm at 90% keeps its full
+  90%. The tooltip still shows the raw chance and mm behind each score
 - All cards share **one mm column scale** (set by the wettest city), so bar
   heights are directly comparable across cities
 - 7-day totals per city and per day column
