@@ -1,10 +1,10 @@
 {
-  "id": "FourCityRain",
+  "id": "/FourCityRain/",
   "name": "Four City Rain Forecast",
   "short_name": "Four City Rain",
   "description": "A 7-day hourly rain forecast matrix for four cities, powered by Open-Meteo.",
-  "start_url": "./",
-  "scope": "./",
+  "start_url": "/FourCityRain/",
+  "scope": "/FourCityRain/",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "any",
