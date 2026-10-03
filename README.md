@@ -13,8 +13,13 @@ geocoding API.
 - All cards share **one mm column scale** (set by the wettest city), so bar
   heights are directly comparable across cities
 - 7-day totals per city and per day column
-- Click a day header to zoom that card into a single day; click the city name
-  to return to the full 7-day view
+- **Opens on a single day.** Swipe a chart left/right (or press ← / →, or use the
+  ‹ › buttons) to step through the other days — all four cards move together
+- Click the day header to return to the full 7-day view; click a day in the
+  7-day view to zoom straight into it, and click the city name to go back
+- **Auto refreshes on open** and whenever the app is brought back to the
+  foreground (reopened PWA, unlocked screen, tab restored from bfcache). Existing
+  charts stay on screen while the refresh runs in the background
 - Swap any city via geocoding search
 - Your chosen cities are remembered in `localStorage`
   (use **Reset** in the header to restore the defaults)

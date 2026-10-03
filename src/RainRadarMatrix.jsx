@@ -10,6 +10,8 @@ const DEFAULT_CITIES = [
 const GEO = "https://geocoding-api.open-meteo.com/v1/search";
 const WX = "https://api.open-meteo.com/v1/forecast";
 const STORAGE_KEY = "rain-radar-matrix:v1";
+/** Days kept per forecast — also the day-index range the swipe walks. */
+const DAY_COUNT = 7;
 
 /* ---------- persistence ---------- */
 
@@ -78,7 +80,7 @@ function parseForecast(hourly) {
       mm: hourly.precipitation?.[i] ?? 0,
     });
   });
-  return [...byDay.entries()].slice(0, 7).map(([date, hours]) => ({
+  return [...byDay.entries()].slice(0, DAY_COUNT).map(([date, hours]) => ({
     date,
     label: dayLabel(date),
     hours,
@@ -252,16 +254,23 @@ function cityKey(city) {
   return `${city.lat.toFixed(4)},${city.lon.toFixed(4)}`;
 }
 
-function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
+function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm, dayIndex, setDayIndex }) {
   const [data, setData] = useState({ status: "loading", days: [] });
   const [retry, setRetry] = useState(0);
   const [tip, setTip] = useState(null);
-  // Date string of the single day being zoomed into, or null for the full 7-day view.
-  const [focusedDay, setFocusedDay] = useState(null);
+  // The open day lives in the app so every card shows the same day and one swipe
+  // moves all four charts. `dayIndex` is an index into the forecast days, or -1
+  // for the full 7-day view (reached by clicking a day or the city name).
+  // Touch origin for the horizontal swipe, captured on touchstart.
+  const swipeOrigin = useRef(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
-    setData((d) => ({ ...d, status: "loading" }));
+    // Keep the current chart on screen while a refresh runs in the background;
+    // only show the skeleton when there is nothing to show yet.
+    setData((d) =>
+      d.days.length ? { ...d, refreshing: true } : { status: "loading", days: [], refreshing: true }
+    );
     (async () => {
       try {
         const url = `${WX}?latitude=${city.lat}&longitude=${city.lon}&hourly=precipitation_probability,precipitation&timezone=auto`;
@@ -269,26 +278,58 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
         if (!res.ok) throw new Error(`Weather API returned ${res.status}`);
         const json = await res.json();
         if (!json.hourly?.time?.length) throw new Error("No hourly data returned");
-        setData({ status: "ready", days: parseForecast(json.hourly) });
+        setData({ status: "ready", days: parseForecast(json.hourly), refreshing: false });
       } catch (e) {
-        if (e.name !== "AbortError") setData({ status: "error", days: [], message: e.message });
+        if (e.name === "AbortError") return;
+        // A failed refresh keeps whatever is already on screen.
+        setData((d) =>
+          d.days.length
+            ? { ...d, refreshing: false, message: e.message }
+            : { status: "error", days: [], refreshing: false, message: e.message }
+        );
       }
     })();
     return () => ctrl.abort();
   }, [city, refreshKey, retry]);
 
-  // Clear the zoom when the city (and therefore its forecast dates) changes, or
-  // when a refresh no longer returns the day that was selected.
-  useEffect(() => {
-    setFocusedDay((d) => (d && data.days.some((day) => day.date === d) ? d : null));
-  }, [data.days]);
+  // The card may hold fewer days than the app-level index points at (a city whose
+  // forecast starts late), in which case it falls back to showing all of them.
+  const openDay = data.days[dayIndex];
+  const focusedDay = dayIndex >= 0 && openDay ? openDay.date : null;
+  // Header readout: the open day's own total, or the whole week in the 7-day view.
+  const openDayTotal = openDay?.total ?? 0;
 
   // The three rows below (day headers, bars, hour marks) all render from this:
-  // every day in the 7-day view, or just the clicked day when zoomed in.
+  // every day in the 7-day view, or just the open day when zoomed in.
   const visibleDays = useMemo(
     () => (focusedDay ? data.days.filter((d) => d.date === focusedDay) : data.days),
     [data.days, focusedDay]
   );
+
+  /** Move `delta` days. From the 7-day view any move drops into a single day. */
+  const stepDay = (delta) =>
+    setDayIndex((i) =>
+      i < 0 ? (delta > 0 ? 0 : DAY_COUNT - 1) : Math.min(Math.max(i + delta, 0), DAY_COUNT - 1)
+    );
+
+  // Horizontal swipe: left goes forward a day, right goes back. Vertical drags
+  // are left to the browser so page scrolling still works normally.
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    if (t) swipeOrigin.current = { x: t.clientX, y: t.clientY };
+  };
+
+  const onTouchEnd = (e) => {
+    const origin = swipeOrigin.current;
+    swipeOrigin.current = null;
+    const t = e.changedTouches[0];
+    if (!origin || !t) return;
+    const dx = t.clientX - origin.x;
+    const dy = t.clientY - origin.y;
+    // Require a clear horizontal flick so taps and scrolls don't change the day.
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    stepDay(dx < 0 ? 1 : -1);
+  };
 
   const { total, maxMm } = useMemo(() => {
     const all = data.days.flatMap((d) => d.hours);
@@ -343,8 +384,8 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
           <h2 className="truncate text-base font-semibold leading-tight text-slate-900 dark:text-slate-50">
             <button
               type="button"
-              onClick={() => setFocusedDay(null)}
-              disabled={!focusedDay}
+              onClick={() => setDayIndex(-1)}
+              disabled={dayIndex < 0}
               title={focusedDay ? "Back to the full 7-day view" : undefined}
               className={`max-w-full truncate rounded text-left focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 focusedDay
@@ -360,19 +401,45 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
         <div className="flex items-center gap-3">
           <div className="text-right">
             <div className="text-lg font-semibold tabular-nums leading-tight text-indigo-600 dark:text-indigo-400">
-              {data.status === "ready" ? total.toFixed(1) : "–"}
+              {data.status === "ready" ? (focusedDay ? openDayTotal.toFixed(1) : total.toFixed(1)) : "–"}
               <span className="ml-0.5 text-xs font-normal text-slate-500">mm</span>
             </div>
-            <div className="text-xs text-slate-500">7-day total</div>
+            <div className="text-xs text-slate-500">
+              {focusedDay ? `${openDay.label} total` : "7-day total"}
+            </div>
           </div>
           <CitySearch onPick={onCityChange} />
         </div>
       </header>
 
       {data.status === "ready" && focusedDay && (
-        <p className="-mt-1 mb-2 text-xs text-slate-500">
-          Zoomed to one day · click <span className="font-medium text-slate-600 dark:text-slate-300">{city.name}</span> above to see all 7 days
-        </p>
+        <div className="-mt-1 mb-2 flex items-center justify-between gap-2 text-xs text-slate-500">
+          <span>
+            One day · swipe or use ← → · click{" "}
+            <span className="font-medium text-slate-600 dark:text-slate-300">{city.name}</span> above to see all 7 days
+          </span>
+          {/* Arrows mirror the swipe so the same navigation works with a mouse. */}
+          <span className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => stepDay(-1)}
+              disabled={dayIndex <= 0}
+              aria-label="Previous day"
+              className="rounded border border-slate-300 px-1.5 leading-tight text-slate-600 disabled:opacity-40 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={() => stepDay(1)}
+              disabled={dayIndex >= DAY_COUNT - 1}
+              aria-label="Next day"
+              className="rounded border border-slate-300 px-1.5 leading-tight text-slate-600 disabled:opacity-40 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              ›
+            </button>
+          </span>
+        </div>
       )}
 
       {data.status === "loading" && (
@@ -401,7 +468,14 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
       )}
 
       {data.status === "ready" && (
-        <div onMouseLeave={() => setTip(null)}>
+        <div
+          onMouseLeave={() => setTip(null)}
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+          onTouchCancel={() => (swipeOrigin.current = null)}
+          /* Let the browser own vertical panning; horizontal flicks are ours. */
+          style={{ touchAction: "pan-y" }}
+        >
           <div className="w-full">
             {/* Day header row — columns are contiguous so they line up with the plot */}
             <div className="flex">
@@ -410,7 +484,12 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
                 <button
                   key={day.date}
                   type="button"
-                  onClick={() => setFocusedDay((cur) => (cur === day.date ? null : day.date))}
+                  onClick={() => {
+                    const idx = data.days.indexOf(day);
+                    // Tapping the open day (or any day in the 7-day view) zooms in;
+                    // tapping the open day again returns to all 7 days.
+                    setDayIndex((cur) => (cur === idx ? -1 : idx));
+                  }}
                   aria-pressed={focusedDay === day.date}
                   title={focusedDay === day.date ? "Show all 7 days" : `Zoom in on ${day.label}`}
                   className={`min-w-0 flex-1 cursor-pointer rounded-md px-1 py-0.5 text-center leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
@@ -559,6 +638,8 @@ function CityCard({ city, onCityChange, refreshKey, sharedMaxMm, onMaxMm }) {
       {data.status === "ready" && (
         <p className="mt-1 text-right text-xs text-slate-400">
           Left axis 0–100% chance · bars share 0–{mmScale.top} mm per hour across all cities
+          {data.refreshing && <span className="ml-1 text-slate-400">· refreshing…</span>}
+          {data.message && <span className="ml-1 text-rose-500">· last refresh failed: {data.message}</span>}
         </p>
       )}
 
@@ -625,6 +706,56 @@ export default function RainRadarMatrix() {
   const cities = state.cities;
   const [refreshKey, setRefreshKey] = useState(0);
 
+  /* ---------- day navigation (shared by all four cards) ---------- */
+  /* The app opens on a single day; swiping a card (or pressing an arrow key)
+     moves every card together. -1 is the full 7-day view. */
+  const [dayIndex, setDayIndex] = useState(0);
+
+  // Arrow keys mirror the swipe, ignored while the user is typing in a search box.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      setDayIndex((i) =>
+        i < 0
+          ? e.key === "ArrowRight" ? 0 : DAY_COUNT - 1
+          : Math.min(Math.max(i + (e.key === "ArrowRight" ? 1 : -1), 0), DAY_COUNT - 1)
+      );
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  /* ---------- auto refresh on open / resume ---------- */
+  /* Cards fetch on mount, so a cold start is already fresh. This covers the other
+     ways the app comes back to life: a PWA reopened from the home screen, a tab
+     restored from the back/forward cache, and a phone waking to a locked screen.
+     The 3 s window collapses the burst of events a single resume produces
+     (pageshow + visibilitychange + focus) and skips the initial page load, whose
+     data the mount fetch already covers. */
+  const lastWakeRefresh = useRef(0);
+
+  useEffect(() => {
+    const wake = () => {
+      const now = Date.now();
+      if (now - lastWakeRefresh.current < 3000) return;
+      lastWakeRefresh.current = now;
+      setRefreshKey((n) => n + 1);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pageshow", wake);
+    window.addEventListener("focus", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pageshow", wake);
+      window.removeEventListener("focus", wake);
+    };
+  }, []);
+
   // Wettest hourly mm per card, keyed by city so that swapping a city drops its
   // old entry out of the shared scale instead of leaving a stale high value.
   const [peakMm, setPeakMm] = useState({});
@@ -655,6 +786,7 @@ export default function RainRadarMatrix() {
 
   const reset = () => {
     setState({ cities: DEFAULT_CITIES });
+    setDayIndex(0);
     try {
       window.localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -678,7 +810,9 @@ export default function RainRadarMatrix() {
               <h1 className="text-lg font-semibold leading-tight tracking-tight">
                 Four City Rain Forecast
               </h1>
-              <p className="text-xs text-slate-500">7-day hourly rain forecast · Open-Meteo</p>
+              <p className="text-xs text-slate-500">
+                7-day hourly rain forecast · one day at a time, swipe for more · Open-Meteo
+              </p>
             </div>
           </div>
 
@@ -730,6 +864,8 @@ export default function RainRadarMatrix() {
               city={city}
               refreshKey={refreshKey}
               sharedMaxMm={sharedMaxMm}
+              dayIndex={dayIndex}
+              setDayIndex={setDayIndex}
               onMaxMm={(mm) => reportMax(cityKey(city), mm)}
               onCityChange={(c) => swap(i, c)}
             />
