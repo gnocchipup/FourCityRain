@@ -49,14 +49,48 @@ Your site will be live at `https://<user>.github.io/FourCityRain/`.
 `public/.nojekyll` is included so GitHub Pages serves the assets as-is instead
 of running them through Jekyll.
 
+## PWA
+
+The app is installable on Android and desktop. Android Chrome requires HTTPS
+(or `localhost`), so the install prompt will not appear over plain HTTP on a
+LAN address.
+
+| File | Purpose |
+| --- | --- |
+| `public/manifest.json` | App name, `standalone` display, theme colour, icons |
+| `public/sw.js` | App-shell caching + offline fallback |
+| `public/icons/*.png` | 192/512 icons, plus maskable and Apple variants |
+| `src/main.jsx` | Registers the worker on page load |
+
+Caching strategy:
+
+- **Navigations** — network-first, falling back to the cached shell so the app
+  still opens offline.
+- **Static assets** — stale-while-revalidate, so repeat loads are instant.
+- **Open-Meteo requests** — never intercepted or cached. The worker returns
+  early on any cross-origin request, so forecast data is always live.
+
+When you change anything cached by the worker, bump `VERSION` in `public/sw.js`
+so returning clients pick up the new build; old caches are deleted on activate.
+
+Useful scripts:
+
+```bash
+npm run icons    # regenerate public/icons/*.png from the favicon geometry
+npm run test:sw  # exercise the sw.js handlers in Node (10 assertions)
+```
+
 ## Project structure
 
 ```
 .github/workflows/deploy.yml  GitHub Pages deployment workflow
-public/                       Static files copied verbatim (favicon, .nojekyll)
+public/                       Static files copied verbatim (favicon, manifest,
+                              sw.js, icons, .nojekyll)
 src/RainRadarMatrix.jsx       App component (data fetching, matrix UI)
-src/main.jsx                  React entry point
+src/main.jsx                  React entry point + service worker registration
 src/index.css                 Tailwind import + base styles
+tools/make-icons.mjs          Regenerates the PWA raster icons
+tools/test-sw.mjs             Service worker logic tests
 index.html                    HTML shell
 vite.config.js                Vite + React + Tailwind plugin config
 ```
